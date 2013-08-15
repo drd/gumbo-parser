@@ -5,8 +5,9 @@
 
 using namespace v8;
 
-void create_parse_tree(Local<Object> tree, GumboNode* root);
-
+Local<Object> create_parse_tree(GumboNode* root);
+Local<Object> consume_element(GumboElement* element);
+Local<Object> consume_text(GumboText* text);
 
 Handle<Value> Method(const Arguments& args) {
     HandleScope scope;
@@ -28,45 +29,82 @@ Handle<Value> Method(const Arguments& args) {
 						   c_str,
 						   args[0]->ToString()->Utf8Length());
 
-    Local<Object> tree = Object::New();
-
-    create_parse_tree(tree, output->root);
+    Local<Object> tree = create_parse_tree(output->root);
 
     return scope.Close(tree);
 }
 
-void create_parse_tree(Local<Object> tree, GumboNode* root) {
-    GumboElement element = root->v.element;
+void record_location(Local<Object> node, GumboSourcePosition* pos) {
+    Local<Object> position = Object::New();
+    position->Set(String::NewSymbol("line"),
+		  Number::New(pos->line));
+    position->Set(String::NewSymbol("column"),
+		  Number::New(pos->column));
+    position->Set(String::NewSymbol("offset"),
+		  Number::New(pos->offset));
+    node->Set(String::NewSymbol("position"), position);
+}
+
+Local<Object> create_parse_tree(GumboNode* node) {
+    Local<Object> parsed;
+
+    switch (node->type) {
+    case GUMBO_NODE_ELEMENT:
+	parsed = consume_element(&node->v.element);
+	break;
+    case GUMBO_NODE_WHITESPACE:
+    case GUMBO_NODE_TEXT:
+	parsed = consume_text(&node->v.text);
+	break;
+    case GUMBO_NODE_CDATA:
+    case GUMBO_NODE_COMMENT:
+	assert(false);
+    }
+
+    return parsed;
+}
+
+Local<Object> consume_element(GumboElement* element) {
+    Local<Object> tree = Object::New();
     tree->Set(String::NewSymbol("tag"),
-	      String::New(element.original_tag.data,
-			  element.original_tag.length));
+	      String::New(element->original_tag.data,
+			  element->original_tag.length));
 
     String::Utf8Value str(tree->Get(String::NewSymbol("tag")));
     char *c_str = *str;
     printf("Tag: %s\n", c_str);
 
     tree->Set(String::NewSymbol("length"),
-	      Number::New(element.children.length));
+	      Number::New(element->children.length));
 
     Local<Array> children = Array::New();
     tree->Set(String::NewSymbol("children"),
 	      children);
 
-    printf("node type: %d\n", root->type);
-    if (root->type != GUMBO_NODE_ELEMENT) {
-	printf("not an element, skipping children.\n");
-	return;
-    }
-    GumboVector* root_children = &element.children;
-    printf("create_parse_tree, %d\n", root_children->length);
-    for (uint i=0; i < element.children.length; i++) {
+    GumboVector* element_children = &element->children;
+    printf("create_parse_tree, %d\n", element_children->length);
+    for (uint i=0; i < element->children.length; i++) {
 	printf("about to make child %d\n", i);
-	Local<Object> child = Object::New();
+	GumboNode *element_child = (GumboNode* )element_children->data[i];
+	Local<Object> child = create_parse_tree(element_child);
 	children->Set(Number::New(i), child);
-	GumboNode *root_child = (GumboNode* )root_children->data[i];
-	create_parse_tree(child, root_child);
     }
+
+    record_location(tree, &element->start_pos);
+    return tree;
 }
+
+Local<Object> consume_text(GumboText* text) {
+    Local<Object> text_node = Object::New();
+    text_node->Set(String::NewSymbol("tag"), String::NewSymbol("#text"));
+    text_node->Set(String::NewSymbol("text"),
+		   String::New(text->text));
+
+    record_location(text_node, &text->start_pos);
+    return text_node;
+}
+
+
 
 void init(Handle<Object> exports) {
     exports->Set(String::NewSymbol("parse"),
